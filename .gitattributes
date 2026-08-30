@@ -1,0 +1,17 @@
+# Enforce LF line endings for text files
+* text=auto eol=lf
+
+# Go and Rust sources are text
+*.go text eol=lf
+*.rs text eol=lf
+*.toml text eol=lf
+*.md text eol=lf
+*.mod text eol=lf
+*.sum text eol=lf
+*.json text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+Makefile text eol=lf
+
+# Binary files
+*.wasm binary

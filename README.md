@@ -353,7 +353,7 @@ Covers: basic expressions, print variants, all exception types, data type round-
 
 ## Building from Source
 
-Requires Rust with `wasm32-wasip1` target and Go 1.23+:
+Requires Rust with `wasm32-wasip1` target and Go 1.25+:
 
 ```bash
 rustup target add wasm32-wasip1
