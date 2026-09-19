@@ -338,7 +338,7 @@ something. Upstream's `limitations/` docs are the exhaustive record; this is the
 - List/dict/set comprehensions
 - `range`, `len`, `sum`, `min`, `max`, `sorted`, `reversed`, `enumerate`, `zip`, `map`, `filter`, `all`, `any`
 - `isinstance`, `type`, `int()`, `float()`, `str()`, `bool()`, `abs()`
-- ```dataclass` (`eq=` and `frozen=` only), `collections.namedtuple`
+- `dataclass` (`eq=` and `frozen=` only), `collections.namedtuple`
 - Modules: `asyncio`, `base64`, `binascii`, `collections`, `dataclasses`, `datetime`, `functools`, `itertools`, `json`, `math`, `os`, `pathlib`, `re`, `sys`, `typing`, `unicodedata`
 - `print()` with `sep` and `end` kwargs
 - `import os`, `from pathlib import Path` (routed through OsCallFunc)
@@ -348,13 +348,13 @@ something. Upstream's `limitations/` docs are the exhaustive record; this is the
 
 Monty deliberately stops short of full Python. The things most likely to bite:
 
-- Class inheritance, metaclasses and method decorators — so no `super()`, ```property`, ```classmethod` or ```staticmethod`
+- Class inheritance, metaclasses and method decorators — so no `super()`, `property`, `classmethod` or `staticmethod`
 - `yield` / generator functions (generator expressions parse but materialise to a `list`)
 - `match` statements, `del`, exception groups (`except*`), PEP 695 `type` aliases, `async with` / `async for`
 - User-defined exception classes
 - Runtime code execution: `eval`, `exec`, `compile`, `__import__`
 - Introspection: `globals`, `locals`, `vars`, `dir`, and function attributes such as `fn.__name__`
-- ```property`, ```classmethod`, ```staticmethod`, `callable`, `issubclass`, `delattr`
+- `property`, `classmethod`, `staticmethod`, `callable`, `issubclass`, `delattr`
 - Modules outside the fixed list above, and any third-party library — there is no `sys.path`
 - `enumerate`, `zip`, `map`, `filter` and `reversed` are eager, not lazy
 

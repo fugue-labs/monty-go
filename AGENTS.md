@@ -29,14 +29,18 @@ evidence of a hang.
 change needs no Rust rebuild.
 
 - monty v0.0.23 pulls `ruff_python_parser`, which uses let-chains, so the build
-  requires Rust **1.95+**: `rustup toolchain install 1.95 --profile minimal
-  --target wasm32-wasip1`.
-- There is no `rust-toolchain.toml`, so a plain `cargo build` — and therefore
-  `make build` — uses the *default* toolchain. If that is older than 1.95 the
-  build fails; select it explicitly with
-  `cargo +1.95 build --target wasm32-wasip1 -p monty-wasm --release`.
-- `make build` copies the artifact to `monty.wasm`. Keep that file mode `644`
-  (it is data, not an executable) and let `.gitattributes` keep it `binary`.
+  requires Rust **1.95+**.
+- `rust-toolchain.toml` pins that channel and the `wasm32-wasip1` target, so
+  `make build` selects the right toolchain and rustup installs the target on
+  first use. Do not remove it — without it `cargo build` falls back to the
+  default toolchain, which is older here and fails on let-chains.
+- `make build` rewrites `monty.wasm`, and the result is **not** byte-identical to
+  the committed file: Rust embeds absolute `CARGO_HOME` paths in panic metadata,
+  so the data section shifts by a few hundred bytes per machine. That is
+  expected, not a bad build — the code section is the same size and the suite
+  passes either way. Do not commit that churn.
+- Keep `monty.wasm` mode `644` (it is data, not an executable) and let
+  `.gitattributes` keep it `binary`.
 
 ## Keep the Go module tidy
 
