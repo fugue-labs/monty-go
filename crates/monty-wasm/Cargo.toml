@@ -2,11 +2,20 @@
 name = "monty-wasm"
 version = "0.1.0"
 edition = "2021"
+# monty v0.0.23 pulls ruff_python_parser, which uses `let` chains guarded by
+# `if let` (stabilized in 1.95). An older toolchain fails deep inside that
+# dependency, so declare the floor here to fail clearly instead.
+rust-version = "1.95"
 
 [lib]
 crate-type = ["cdylib"]
 
+# Pinned to the monty release this bridge targets. monty, monty-types and
+# monty-alloc must all resolve to the same revision so they share a single copy
+# of the LIVE_MEMORY accounting static that monty-alloc enforces against.
 [dependencies]
-monty = { git = "https://github.com/pydantic/monty.git", tag = "v0.0.11" }
+monty = { git = "https://github.com/pydantic/monty.git", tag = "v0.0.23" }
+monty-types = { git = "https://github.com/pydantic/monty.git", tag = "v0.0.23" }
+monty-alloc = { git = "https://github.com/pydantic/monty.git", tag = "v0.0.23" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

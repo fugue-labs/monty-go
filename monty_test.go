@@ -1452,15 +1452,21 @@ recurse(5)
 		WithLimits(Limits{MaxRecursionDepth: 100}))
 }
 
-func TestLimitsAllocationLimit(t *testing.T) {
+func TestLimitsSuspensionLimit(t *testing.T) {
 	r := newRunner(t)
+	// Sandbox code that loops on host calls would otherwise be serviced forever
+	// while the execution-time budget is paused, so the host caps it.
 	code := `
-for i in range(10000):
-    x = [i] * 100
-x
+total = 0
+for i in range(100):
+    total = step(total)
+total
 `
-	assertMontyError(t, r, code, nil, "MemoryError",
-		WithLimits(Limits{MaxAllocations: 5}))
+	assertMontyError(t, r, code, nil, "suspensions",
+		WithLimits(Limits{MaxSuspensions: 10}),
+		WithExternalFunc(func(ctx context.Context, call *FunctionCall) (any, error) {
+			return float64(1), nil
+		}, Func("step", "n")))
 }
 
 func TestLimitsMemoryLimit(t *testing.T) {

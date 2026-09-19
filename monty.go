@@ -2,6 +2,11 @@
 // interpreter compiled to WebAssembly. It uses wazero (pure Go, no CGO) to
 // execute Python code in a sandboxed environment with pause/resume support
 // for external function calls.
+//
+// The embedded module is monty v0.0.23, built from crates/monty-wasm as a core
+// wasm32-wasip1 module rather than the WebAssembly Component Model build Monty
+// ships for its JS package, since wazero does not implement the component
+// model.
 package montygo
 
 import (
@@ -27,26 +32,37 @@ type Runner struct {
 }
 
 // Limits configures resource limits for Python execution.
+//
+// A zero field means "no limit configured here", except that Monty itself
+// defaults MaxRecursionDepth and MaxSuspensions to 1000 when they are left
+// zero.
 type Limits struct {
-	MaxMemoryBytes    uint64        `json:"max_memory,omitempty"`
-	MaxDuration       time.Duration `json:"-"`
-	MaxAllocations    uint64        `json:"max_allocations,omitempty"`
-	MaxRecursionDepth uint32        `json:"max_recursion_depth,omitempty"`
+	// MaxMemoryBytes caps allocator-backed memory. Monty enforces it from inside
+	// the allocator: the interpreter raises MemoryError once the session's soft
+	// limit is crossed. A limit too large to express in a 32-bit address space
+	// is ignored, since an uncapped wasm module has no tighter cap to offer.
+	MaxMemoryBytes uint64 `json:"max_memory,omitempty"`
+	// MaxDuration caps cumulative bytecode-execution time. Time spent suspended
+	// in a host callback or OS call does not count against it.
+	MaxDuration time.Duration `json:"-"`
+	// MaxRecursionDepth caps Python call-stack depth; exceeding it raises
+	// RecursionError.
+	MaxRecursionDepth uint32 `json:"max_recursion_depth,omitempty"`
+	// MaxSuspensions caps how many external function and OS calls the host will
+	// service in one execution. Monty only stores this limit, so the bridge
+	// enforces it and stops sandbox code that loops on host calls.
+	MaxSuspensions uint32 `json:"max_suspensions,omitempty"`
 }
 
 // MarshalJSON implements custom JSON marshaling for Limits.
 func (l Limits) MarshalJSON() ([]byte, error) {
 	type alias struct {
-		MaxAllocations    *uint64 `json:"max_allocations,omitempty"`
 		MaxDurationMs     *uint64 `json:"max_duration_ms,omitempty"`
 		MaxMemory         *uint64 `json:"max_memory,omitempty"`
 		MaxRecursionDepth *uint32 `json:"max_recursion_depth,omitempty"`
+		MaxSuspensions    *uint32 `json:"max_suspensions,omitempty"`
 	}
 	a := alias{}
-	if l.MaxAllocations > 0 {
-		v := l.MaxAllocations
-		a.MaxAllocations = &v
-	}
 	if l.MaxDuration > 0 {
 		v := uint64(l.MaxDuration.Milliseconds())
 		a.MaxDurationMs = &v
@@ -59,6 +75,10 @@ func (l Limits) MarshalJSON() ([]byte, error) {
 		v := l.MaxRecursionDepth
 		a.MaxRecursionDepth = &v
 	}
+	if l.MaxSuspensions > 0 {
+		v := l.MaxSuspensions
+		a.MaxSuspensions = &v
+	}
 	return json.Marshal(a)
 }
 
@@ -69,6 +89,11 @@ type FunctionCall struct {
 	Name   string
 	Args   map[string]any
 	CallID uint32
+	// ObjectID is set when the call is routed to a host-backed object — a method
+	// call on an instance, or construction of a host class — rather than a plain
+	// external function. This bridge does not expose host objects, so it is
+	// normally empty. The receiver is not included in Args.
+	ObjectID string
 }
 
 // ArgsJSON returns Args serialized as a JSON string, suitable for passing
@@ -129,6 +154,21 @@ func WithExternalFunc(fn ExternalFunc, funcs ...FuncDef) ExecuteOption {
 		c.externalFunc = fn
 		c.extFuncs = funcs
 	}
+}
+
+// declaresExtFunc reports whether name was declared through one of
+// WithExternalFunc's FuncDefs. Callers that declare no functions keep the
+// permissive behaviour of servicing whatever name the sandbox asks for.
+func (c *executeConfig) declaresExtFunc(name string) bool {
+	if len(c.extFuncs) == 0 {
+		return true
+	}
+	for _, f := range c.extFuncs {
+		if f.Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 // WithOsCallFunc sets the callback for OS-level operations.

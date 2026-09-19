@@ -8,6 +8,8 @@ A pure-Go wrapper around [Pydantic's Monty](https://github.com/pydantic/monty) P
 go get github.com/fugue-labs/monty-go
 ```
 
+Wraps **monty v0.0.23**. The embedded interpreter is built from `crates/monty-wasm`, a thin C-ABI shim over Monty's pause/resume API — see [Building from Source](#building-from-source).
+
 ## Why?
 
 LLMs work faster, cheaper, and more reliably when they write code instead of making sequential tool calls. Instead of:
@@ -26,7 +28,7 @@ tokyo = search(query="weather tokyo")
 compare(a=london, b=tokyo)
 ```
 
-One model call instead of three. The Python code calls your Go functions, Monty pauses at each call, your Go code executes it, and Monty resumes. No containers. No sandbox services. No `exec()`. Just a 2.9MB WASM binary embedded in your Go binary.
+One model call instead of three. The Python code calls your Go functions, Monty pauses at each call, your Go code executes it, and Monty resumes. No containers. No sandbox services. No `exec()`. Just a 5.0MB WASM binary embedded in your Go binary.
 
 For motivation, see:
 - [Programmatic Tool Calling](https://platform.claude.com/docs/en/agents-and-tools/tool-use/programmatic-tool-calling) from Anthropic
@@ -111,20 +113,31 @@ result, err := runner.Execute(ctx, code, nil,
 
 ## Resource Limits
 
-Prevent runaway code with memory, time, allocation, and recursion limits:
+Prevent runaway code with time, memory, recursion, and host-call limits:
 
 ```go
 result, err := runner.Execute(ctx, code, inputs,
     montygo.WithLimits(montygo.Limits{
         MaxDuration:       5 * time.Second,
         MaxMemoryBytes:    10 * 1024 * 1024, // 10 MB
-        MaxAllocations:    100000,
         MaxRecursionDepth: 100,
+        MaxSuspensions:    1000,
     }),
 )
 ```
 
-Infinite loops, memory bombs, and deep recursion all terminate cleanly with a `*MontyError`. Go's `context.Context` deadlines are also respected — cancel the context and the WASM instance stops.
+Infinite loops, memory bombs, and deep recursion all terminate cleanly with a `*MontyError`.
+
+- `MaxMemoryBytes` is enforced from inside the allocator, so it also catches memory that a single expression tries to
+  allocate in one burst.
+- `MaxDuration` counts bytecode execution only, so time your callbacks spend working does not eat into it.
+- `MaxSuspensions` bounds how many external and OS calls the host will service. Because the execution-time budget is
+  paused while you are handling a callback, this is what stops sandbox code that simply loops on host calls.
+
+Go's `context.Context` deadlines are also respected — cancel the context and the WASM instance stops.
+
+Note: monty removed its `max_allocations` limit, so `Limits.MaxAllocations` is gone; `MaxMemoryBytes` covers the
+same ground.
 
 ## Print Capture
 
@@ -242,9 +255,9 @@ Gollem gives you compile-time type safety, structured output, guardrails, cost t
 │  │  wazero (pure Go WASM runtime)  │                    │
 │  │                                 │                    │
 │  │  ┌───────────────────────────┐  │                    │
-│  │  │  monty.wasm (2.9 MB)      │  │  ◄── go:embed      │
+│  │  │  monty.wasm (5.0 MB)      │  │  ◄── go:embed      │
 │  │  │  Monty Python Interpreter │  │                    │
-│  │  │  compiled to wasm32-wasi  │  │                    │
+│  │  │  compiled to wasm32-wasip1│  │                    │
 │  │  └──────────┬────────────────┘  │                    │
 │  │             │                   │                    │
 │  │     pause on external call      │                    │
@@ -314,52 +327,66 @@ if errors.As(err, &me) {
 
 ## What Monty Can Do
 
-Tracks upstream [Monty v0.0.11](https://github.com/pydantic/monty/releases/tag/v0.0.11).
+Monty implements the subset of Python that a model needs, and aims to match CPython 3.14 everywhere it does implement
+something. Upstream's `limitations/` docs are the exhaustive record; this is the practical summary.
 
-- Arithmetic, string operations, f-strings, slicing
-- Functions, lambdas, closures, generators
+- Arithmetic, strings, f-strings (including the `=` debug form), `str.format()`, slicing
+- Functions, `lambda`, closures, decorators, `async def` with `asyncio.run` / `asyncio.gather`
+- Simple classes: methods, `__init__`, dunder protocols, class variables, `with` blocks
 - `for`/`while` loops, `if`/`elif`/`else`, `break`/`continue`
-- `try`/`except`/`finally`/`else`, `raise`, exception hierarchy
-- List/dict/set comprehensions, dict/set view operators
-- `range`, `len`, `sum`, `min`, `max`, `sorted`, `reversed`, `enumerate`, `zip`, `map`, `filter`, `all`, `any`, `getattr`
+- `try`/`except`/`else`/`finally`, `raise ... from ...`, exception hierarchy
+- List/dict/set comprehensions
+- `range`, `len`, `sum`, `min`, `max`, `sorted`, `reversed`, `enumerate`, `zip`, `map`, `filter`, `all`, `any`
 - `isinstance`, `type`, `int()`, `float()`, `str()`, `bool()`, `abs()`
+- ```dataclass` (`eq=` and `frozen=` only), `collections.namedtuple`
+- Modules: `asyncio`, `base64`, `binascii`, `collections`, `dataclasses`, `datetime`, `functools`, `itertools`, `json`, `math`, `os`, `pathlib`, `re`, `sys`, `typing`, `unicodedata`
 - `print()` with `sep` and `end` kwargs
-- PEP 448 generalized unpacking (`*args`, `**kwargs` in calls, literals, etc.)
-- Nested and augmented subscript assignment (`a[i][j] = v`, `a[i] += 1`)
-- Tuple comparison (`<`, `>`, `<=`, `>=`)
-- Multi-module imports (`import a, b, c`)
-- Stdlib modules: `math` (all functions), `re`, `datetime`, `json`, and `sys`/`typing`/`asyncio` subsets
 - `import os`, `from pathlib import Path` (routed through OsCallFunc)
-- Dataclass *instances* flow through external function calls (args, returns, and method calls surface with `method_call=true`)
-- Resource limits: time, memory, allocations, recursion depth
+- Resource limits: time, memory, recursion depth, host-call budget
 
 ## What Monty Cannot Do
 
-- Class definitions (only dataclass instances via external I/O; upstream Monty flags class `def` as "coming soon")
-- `match` statements (coming soon upstream)
-- Context managers (`with ...`)
-- Rest of stdlib and all third-party libraries
-- `float('inf')` / `float('nan')` (JSON serialization limitation in this bridge)
+Monty deliberately stops short of full Python. The things most likely to bite:
+
+- Class inheritance, metaclasses and method decorators — so no `super()`, ```property`, ```classmethod` or ```staticmethod`
+- `yield` / generator functions (generator expressions parse but materialise to a `list`)
+- `match` statements, `del`, exception groups (`except*`), PEP 695 `type` aliases, `async with` / `async for`
+- User-defined exception classes
+- Runtime code execution: `eval`, `exec`, `compile`, `__import__`
+- Introspection: `globals`, `locals`, `vars`, `dir`, and function attributes such as `fn.__name__`
+- ```property`, ```classmethod`, ```staticmethod`, `callable`, `issubclass`, `delattr`
+- Modules outside the fixed list above, and any third-party library — there is no `sys.path`
+- `enumerate`, `zip`, `map`, `filter` and `reversed` are eager, not lazy
+
+Two entries in this list have changed upstream and no longer apply: simple classes are supported now, and `filter()`
+works. `float('inf')` and `float('nan')` still do not survive the JSON boundary into Go.
 
 ## Tests
 
-97 end-to-end tests covering every testable scenario from Monty's core test suite:
+160 end-to-end tests covering every testable scenario from Monty's core test suite:
 
 ```bash
 make test
 ```
 
-Covers: basic expressions, print variants, all exception types, data type round-tripping, external functions (args, kwargs, mixed, complex types, chaining, loops), input handling and scoping, resource limits (timeout, recursion, memory, allocations), OS calls, builtins, control flow, lambdas/closures, and execution isolation.
+Covers: basic expressions, print variants, all exception types, data type round-tripping, external functions (args, kwargs, mixed, complex types, chaining, loops), input handling and scoping, resource limits (timeout, recursion, memory, host-call budget), OS calls, builtins, control flow, lambdas/closures, and execution isolation.
 
 ## Building from Source
 
-Requires Rust with `wasm32-wasip1` target and Go 1.25+:
+Requires **Rust 1.95+** with the `wasm32-wasip1` target, and Go 1.25+. The Rust floor is set by monty v0.0.23,
+which compiles `ruff_python_parser` — that crate uses `if let` guards, stabilized in 1.95.
 
 ```bash
-rustup target add wasm32-wasip1
+rustup toolchain install 1.95 --profile minimal --target wasm32-wasip1
 make build  # compiles Rust → WASM, copies to monty.wasm
 make test   # builds and runs Go tests
 ```
+
+The artifact is a **core** WASM module, not the WebAssembly Component Model build Monty ships for its JS package:
+wazero does not implement the component model, so `crates/monty-wasm` exposes Monty's pause/resume API over a plain
+C ABI instead. To move to a newer Monty release, bump the `monty`, `monty-types` and `monty-alloc` pins in
+`crates/monty-wasm/Cargo.toml` together (they must share one revision, so that they see the same memory accounting),
+rebuild, and re-run the tests.
 
 ## Acknowledgments
 

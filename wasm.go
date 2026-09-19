@@ -162,6 +162,7 @@ type progressResult struct {
 	Args           *json.RawMessage `json:"args,omitempty"`
 	Kwargs         *json.RawMessage `json:"kwargs,omitempty"`
 	CallID         *uint32          `json:"call_id,omitempty"`
+	ObjectID       *string          `json:"object_id,omitempty"`
 	PendingCallIDs []uint32         `json:"pending_call_ids,omitempty"`
 	Error          *string          `json:"error,omitempty"`
 	PrintOutput    *string          `json:"print_output,omitempty"`
@@ -273,15 +274,20 @@ func (inst *instance) execute(ctx context.Context, code string, inputs map[strin
 			return nil, &MontyError{Message: errMsg}
 
 		case statusFunctionCall:
-			if cfg.externalFunc == nil {
-				return nil, fmt.Errorf("montygo: external function %q called but no handler configured",
-					deref(progress.FunctionName))
+			name := deref(progress.FunctionName)
+			// Monty hands every unresolved global call to the host, so a name the
+			// caller never declared is an undefined name from the sandbox's point of
+			// view. Mirror the interpreter and raise NameError instead of leaking a
+			// host-side error out of the sandbox.
+			if cfg.externalFunc == nil || !cfg.declaresExtFunc(name) {
+				return nil, &MontyError{Message: fmt.Sprintf("NameError: name '%s' is not defined", name)}
 			}
 
 			call := &FunctionCall{
-				Name:   deref(progress.FunctionName),
-				Args:   rawObjectToMap(progress.Args),
-				CallID: derefU32(progress.CallID),
+				Name:     name,
+				Args:     rawObjectToMap(progress.Args),
+				CallID:   derefU32(progress.CallID),
+				ObjectID: deref(progress.ObjectID),
 			}
 
 			returnVal, fnErr := cfg.externalFunc(ctx, call)
